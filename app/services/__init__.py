@@ -12,3 +12,4 @@ class ConnectorService(ABC):
 
 
 from app.services.github import GitHubConnector  # noqa
+from app.services.github import OrganizationConnector  # noqa

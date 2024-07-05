@@ -38,3 +38,31 @@ class GitHubConnector(ConnectorService):
         else:
             print(f"Failed to unfollow {username}. Status code: {response.status_code}")
             print(response.text)
+
+
+class OrganizationConnector:
+    def __init__(self) -> None:
+        self.base_url = "https://api.github.com"
+
+    @property
+    def headers(self):
+        return {
+            "Authorization": f"token {config.GITHUB_TOKEN}",
+            "Accept": "application/vnd.github.v3+json",
+        }
+
+    def receive_followers(self, username):
+        response = requests.get(
+            f"{self.base_url}/users/{username}/followers",
+            headers=self.headers,
+        )
+
+        if response.status_code == 200:
+            followers = response.json()
+            return followers
+        else:
+            print(
+                f"Failed to retrieve followers for {username}. Status code: {response.status_code}"
+            )
+            print(response.text)
+            return None
