@@ -1,24 +1,16 @@
 from dotenv import load_dotenv
 
-from app.services import GitHubConnector, OrganizationConnector
-from app.utils import FS
+from app.services import GitHubConnector
+from app.utils import FileStorage
 
 if __name__ == "__main__":
     load_dotenv()
 
-    s1 = OrganizationConnector()
     s2 = GitHubConnector()
-    fs = FS("usernames.txt")
+    fs = FileStorage("profiles.json")
 
-    organizations = []
-
-    for org in organizations:
-        resp = s1.receive_followers(org)
-
-        for info in resp:
-            fs.append(info.get("login"))
-
-    profiles = fs.read().splitlines()
-
-    for profile in profiles:
-        s2.follow(profile)
+    for profile in fs.data:
+        username = profile.get("key")
+        lang: str | None = profile.get("content").get("lang")
+        if lang:
+            s2.follow(username)

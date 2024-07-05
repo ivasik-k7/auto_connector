@@ -56,3 +56,5 @@ env/
 
 # Data Related
 usernames.txt
+profiles.json
+organizations.json
