@@ -1,0 +1,55 @@
+# Byte-compiled / optimized Python files
+__pycache__/
+*.py[cod]
+
+# C extensions
+*.so
+
+test
+
+# Distribution / packaging
+.env
+build/
+dist/
+*.egg-info/
+
+# INTERNAL OUTPUTS RELATED
+**/content/*
+**/downloads/*
+**/subtitles/*
+**/results/*
+**/audio/**
+**/ssml/**
+**/out/**
+
+# Virtual environments
+venv/
+.env/
+env/
+
+# Development tools
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.pyproj
+*.user
+*.bak
+
+# Other
+*.log
+*.pot
+*.po
+*.mo
+*.bak
+.DS_Store
+
+# Local Database Related
+**/*.db
+
+# Dev related
+**/TODO.md
+**/todo.md
+**/*.example.yaml
