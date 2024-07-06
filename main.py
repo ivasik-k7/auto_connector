@@ -12,5 +12,5 @@ if __name__ == "__main__":
     for profile in fs.data:
         username = profile.get("key")
         lang: str | None = profile.get("content").get("lang")
-        if lang:
-            s2.follow(username)
+        if lang and "Java" in lang:
+            s2.follow(username, delay=4)

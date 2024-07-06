@@ -1,3 +1,5 @@
+from time import sleep
+
 import requests
 
 from app.services import ConnectorService
@@ -17,12 +19,20 @@ class GitHubConnector(ConnectorService):
             "Accept": "application/vnd.github.v3+json",
         }
 
-    def follow(self, username: str):
+    def follow(self, username: str, delay: int | None):
         url = f"{self.base_url}/user/following/{username}"
         try:
             response = requests.put(url, headers=self.headers)
+
             response.raise_for_status()
-            logger.info(f"You has been following to {username}")
+
+            if response.status_code != 200:
+                logger.debug(f"You has been already subscribed for {username}")
+            else:
+                logger.debug(f"You has been following to {username}")
+
+            if delay:
+                sleep(delay)
         except Exception as e:
             logger.exception(f"Following {username} exception: {str(e)}")
 
@@ -31,7 +41,10 @@ class GitHubConnector(ConnectorService):
         try:
             response = requests.delete(url, headers=self.headers)
             response.raise_for_status()
-            logger.info(f"You has been unfollowed {username}")
+            if response.status_code != 200:
+                logger.debug(f"You has been already unsubscribed for {username}")
+            else:
+                logger.debug(f"You has been unfollowed {username}")
         except Exception as e:
             logger.exception(f"Unfollow {username} exception: {str(e)}")
 
@@ -49,6 +62,29 @@ class OrganizationConnector:
 
     def receive_followers(self, username: str):
         url = f"{self.base_url}/users/{username}/followers"
+        page = 1
+        per_page = 100
+        followers = []
+        try:
+            while True:
+                params = {"page": page, "per_page": per_page}
+                response = requests.get(url, headers=self.headers, params=params)
+                response.raise_for_status()
+
+                current_followers = response.json()
+                if not current_followers:
+                    break
+
+                followers.extend(current_followers)
+                page += 1
+
+            return followers
+        except requests.exceptions.RequestException as e:
+            logger.exception(f"Error fetching followers for '{username}': {e}")
+            return None
+
+    def receive_following(self, username: str) -> list:
+        url = f"{self.base_url}/users/{username}/following"
         page = 1
         per_page = 100
         followers = []
