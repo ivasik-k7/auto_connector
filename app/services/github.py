@@ -26,10 +26,10 @@ class GitHubConnector(ConnectorService):
 
             response.raise_for_status()
 
-            if response.status_code != 200:
-                logger.debug(f"You has been already subscribed for {username}")
+            if response.text == "":
+                logger.info(f"You has been following to {username}")
             else:
-                logger.debug(f"You has been following to {username}")
+                logger.info(f"You has been already subscribed for {username}")
 
             if delay:
                 sleep(delay)
