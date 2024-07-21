@@ -1,92 +1,77 @@
+import csv
 import json
-from abc import ABC, abstractmethod
+import os
+import threading
+import time
+from typing import Callable, Dict, List
 
 
-class StorageManager(ABC):
-    @abstractmethod
-    def add(self, key: str, content: any) -> None:
-        """Add content associated with a key, ensuring uniqueness."""
-        pass
-
-    @abstractmethod
-    def delete(self, key: str) -> None:
-        """Delete content associated with a key."""
-        pass
-
-    @abstractmethod
-    def read(self, key: str) -> any:
-        """Read content associated with a key."""
-        pass
-
-    @abstractmethod
-    def all(self) -> dict:
-        """Return all key-value pairs."""
-        pass
-
-
-class InMemoryStorage(StorageManager):
-    def __init__(self):
-        self.storage = {}
-
-    def add(self, key: str, content: any) -> bool:
-        if key not in self.storage:
-            self.storage[key] = content
-            return True
-        else:
-            return False  # Key already exists
-
-    def delete(self, key: str) -> None:
-        if key in self.storage:
-            del self.storage[key]
-
-    def read(self, key: str) -> any:
-        return self.storage.get(key, None)
-
-    def all(self) -> dict:
-        return self.storage.copy()
-
-
-class FileStorage(StorageManager):
+class MultiThreadStorage:
     def __init__(self, file_path: str):
         self.file_path = file_path
         self.data = []
         self._load_from_file()
+        self._lock = threading.Lock()
+        self._dirty = False
+        self._save_interval = 5  # Save every 5 seconds if there are changes
+        self._start_autosave()
 
-    def add(self, key: str, content: any) -> bool:
-        if not self._exists_in_data(key):
-            self.data.append({"key": key, "content": content})
-            self._save_to_file()
-            return True
-        else:
-            return False  # Key already exists
+    def add(self, item) -> None:
+        """Adds an item to the data list."""
+        with self._lock:
+            self.data.append(item)
+            self._dirty = True
 
-    def delete(self, key: str) -> None:
-        self.data = [item for item in self.data if item["key"] != key]
-        self._save_to_file()
-
-    def read(self, key: str) -> any:
-        for item in self.data:
-            if item["key"] == key:
-                return item["content"]
-        return None
-
-    def all(self) -> dict:
-        all_data = {item["key"]: item["content"] for item in self.data}
-        return all_data
+    def save(self) -> None:
+        """Saves the current state of data to the file."""
+        with self._lock:
+            if not self._dirty:
+                return  # No changes to save
+            with open(self.file_path, "w") as f:
+                json.dump(self.data, f)
+            self._dirty = False
 
     def _load_from_file(self) -> None:
-        try:
+        """Loads data from the file if it exists, otherwise initializes an empty list."""
+        if os.path.exists(self.file_path):
             with open(self.file_path, "r") as f:
                 self.data = json.load(f)
-        except FileNotFoundError:
+        else:
             self.data = []
 
-    def _save_to_file(self) -> None:
-        with open(self.file_path, "w") as f:
-            json.dump(self.data, f, indent=4)
+    def _start_autosave(self):
+        def autosave():
+            while True:
+                time.sleep(self._save_interval)
+                self.save()
 
-    def _exists_in_data(self, key: str) -> bool:
-        for item in self.data:
-            if item["key"] == key:
-                return True
-        return False
+        thread = threading.Thread(target=autosave, daemon=True)
+        thread.start()
+
+    def save_as_csv(self, csv_file_path: str) -> None:
+        """Saves the current state of data to a CSV file."""
+        with self._lock:
+            if not self.data:
+                return  # No data to save
+            with open(csv_file_path, "w", newline="") as csvfile:
+                fieldnames = ["id", "login", "lang", "avatar", "type", "url"]
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+                for item in self.data:
+                    writer.writerow(item)
+
+    def query(self, condition: Callable[[Dict], bool]) -> List[Dict]:
+        """Query the data based on a condition."""
+        with self._lock:
+            return [item for item in self.data if condition(item)]
+
+
+class StorageManager:
+    def __init__(self, file_path: str):
+        self.storage = MultiThreadStorage(file_path)
+
+    def __enter__(self):
+        return self.storage
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.storage.save()
