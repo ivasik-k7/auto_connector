@@ -30,7 +30,7 @@ if __name__ == "__main__":
     organizations = ["ivasik-k7"]
     connector_service = OrganizationConnector()
 
-    with StorageManager("examples/profiles.json") as fm:
+    with StorageManager("active_profiles.json") as fm:
         with ThreadPoolExecutor(max_workers=10) as executor:
             futures = []
             for org in organizations:

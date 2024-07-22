@@ -13,7 +13,7 @@ class MultiThreadStorage:
         self._load_from_file()
         self._lock = threading.Lock()
         self._dirty = False
-        self._save_interval = 5  # Save every 5 seconds if there are changes
+        self._save_interval = 5
         self._start_autosave()
 
     def add(self, item) -> None:
@@ -26,7 +26,7 @@ class MultiThreadStorage:
         """Saves the current state of data to the file."""
         with self._lock:
             if not self._dirty:
-                return  # No changes to save
+                return
             with open(self.file_path, "w") as f:
                 json.dump(self.data, f)
             self._dirty = False
@@ -52,7 +52,7 @@ class MultiThreadStorage:
         """Saves the current state of data to a CSV file."""
         with self._lock:
             if not self.data:
-                return  # No data to save
+                return
             with open(csv_file_path, "w", newline="") as csvfile:
                 fieldnames = ["id", "login", "lang", "avatar", "type", "url"]
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
