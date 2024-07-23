@@ -1,20 +1,33 @@
-import csv
-import json
 import os
 import threading
-import time
 from typing import Callable, Dict, List
+
+from app.utils.reader import FileReaderFactory
+from app.utils.writer import FileWriterFactory
 
 
 class MultiThreadStorage:
-    def __init__(self, file_path: str):
+    def __init__(
+        self,
+        file_path: str,
+        output_path: str | None = None,
+        autosave: bool = False,
+        save_interval: int = 5,
+    ):
+        ##
         self.file_path = file_path
+        self.output_path = output_path or file_path
+        ###
         self.data = []
         self._load_from_file()
+        ###
         self._lock = threading.Lock()
         self._dirty = False
-        self._save_interval = 5
-        self._start_autosave()
+
+        # following lines to enable autosave
+        self._save_interval = save_interval
+        if autosave:
+            self._start_autosave()
 
     def add(self, item) -> None:
         """Adds an item to the data list."""
@@ -27,38 +40,28 @@ class MultiThreadStorage:
         with self._lock:
             if not self._dirty:
                 return
-            with open(self.file_path, "w") as f:
-                json.dump(self.data, f)
+            writer = FileWriterFactory.get_file_writer(self.output_path)
+            writer.write(self.output_path, self.data)
             self._dirty = False
 
     def _load_from_file(self) -> None:
         """Loads data from the file if it exists, otherwise initializes an empty list."""
         if os.path.exists(self.file_path):
-            with open(self.file_path, "r") as f:
-                self.data = json.load(f)
+            reader = FileReaderFactory.get_file_reader(self.file_path)
+            self.data = reader.read(self.file_path)
         else:
             self.data = []
 
+    def _autosave(self):
+        """Periodically saves the data to the file."""
+        while True:
+            threading.Event().wait(self._save_interval)
+            self.save()
+
     def _start_autosave(self):
-        def autosave():
-            while True:
-                time.sleep(self._save_interval)
-                self.save()
-
-        thread = threading.Thread(target=autosave, daemon=True)
-        thread.start()
-
-    def save_as_csv(self, csv_file_path: str) -> None:
-        """Saves the current state of data to a CSV file."""
-        with self._lock:
-            if not self.data:
-                return
-            with open(csv_file_path, "w", newline="") as csvfile:
-                fieldnames = ["id", "login", "lang", "avatar", "type", "url"]
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                writer.writeheader()
-                for item in self.data:
-                    writer.writerow(item)
+        """Starts the autosave thread."""
+        autosave_thread = threading.Thread(target=self._autosave, daemon=True)
+        autosave_thread.start()
 
     def query(self, condition: Callable[[Dict], bool]) -> List[Dict]:
         """Query the data based on a condition."""
@@ -67,8 +70,21 @@ class MultiThreadStorage:
 
 
 class StorageManager:
-    def __init__(self, file_path: str):
-        self.storage = MultiThreadStorage(file_path)
+    def __init__(
+        self,
+        file_path: str,
+        output_path: str | None = None,
+        autosave: bool = False,
+        save_interval: int = 5,
+    ):
+        self.input_path = file_path
+        self.output_path = output_path or file_path
+        self.storage = MultiThreadStorage(
+            self.input_path,
+            self.output_path,
+            autosave,
+            save_interval,
+        )
 
     def __enter__(self):
         return self.storage

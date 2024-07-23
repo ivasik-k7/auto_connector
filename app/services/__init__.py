@@ -13,4 +13,4 @@ class ConnectorService(ABC):
 
 from app.services.github import GitHubConnector  # noqa
 from app.services.github import OrganizationConnector  # noqa
-from app.services.leetcode import LeetcodeSpectator  # noqa
+from app.services.leetcode import LeetcodeStats  # noqa
