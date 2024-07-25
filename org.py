@@ -2,16 +2,17 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from dotenv import load_dotenv
 
-from app.services import OrganizationConnector
-from app.utils import StorageManager, config, setup_logger
+from app.services import GitHubActivityService, GitHubStatsService
+from app.utils import StorageManager, config, setup_logger, time_it
 
 logger = setup_logger(__name__, log_file="org.log")
 
 
-def process_follower(follower, connector_service, file_manager):
+@time_it
+def process_follower(follower, stats_service, file_manager):
     username = follower.get("login")
     try:
-        language = connector_service.get_follower_top_lang(username)
+        language = stats_service.get_top_language(username)
         file_manager.add(
             {
                 "id": follower.get("id", ""),
@@ -25,25 +26,28 @@ def process_follower(follower, connector_service, file_manager):
         logger.error(f"Error processing follower {username}: {e}")
 
 
+@time_it
 def main():
     load_dotenv()
 
-    connector_service = OrganizationConnector()
+    activity_service = GitHubActivityService()
+    stats_service = GitHubStatsService()
+
     organizations = ["ivasik-k7"]
 
-    with StorageManager("examples/profiles.txt") as file_manager:
+    with StorageManager("examples/profiles.xml") as file_manager:
         with ThreadPoolExecutor(config.MAX_WORKERS) as executor:
             futures = []
 
             for org in organizations:
                 try:
-                    followers = connector_service.receive_followers(org)
+                    followers = activity_service.get_followers(org)
                     for follower in followers:
                         futures.append(
                             executor.submit(
                                 process_follower,
                                 follower,
-                                connector_service,
+                                stats_service,
                                 file_manager,
                             )
                         )

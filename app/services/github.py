@@ -1,16 +1,55 @@
-from time import sleep
-
 import requests
+from requests.adapters import HTTPAdapter
+from requests.exceptions import HTTPError, RequestException, Timeout
+from urllib3.util.retry import Retry
 
-from app.services import ConnectorService
-from app.utils import config, setup_logger
+from app.utils import HttpMethod, config, setup_logger
 
 logger = setup_logger(__name__, log_file="github_logs.log")
 
 
-class GitHubConnector(ConnectorService):
+class HttpSessionFactory:
+    @staticmethod
+    def create_session(retries: int = 5, backoff_factor: int = 1) -> requests.Session:
+        session = requests.Session()
+        retry_strategy = Retry(
+            total=retries,
+            backoff_factor=backoff_factor,
+            status_forcelist=[429, 500, 502, 503, 504],
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("https://", adapter)
+        return session
+
+
+class GitHubStatsService:
+    """Connector for retrieving GitHub user statistics."""
+
+    def get_top_language(self, username: str) -> str | None:
+        url = (
+            f"https://github-readme-stats.vercel.app/api/top-langs/"
+            f"?username={username}&theme=vue-dark&show_icons=true&"
+            f"hide_border=true&layout=compact&langs_count=1"
+        )
+
+        try:
+            response = requests.request(HttpMethod.GET.value, url)
+            response.raise_for_status()
+            content = response.content.decode("utf-8")
+
+            for line in content.splitlines():
+                if "100.00%" in line:
+                    return line.split("100.00%")[0].strip()
+
+        except requests.RequestException as e:
+            logger.error(f"Error retrieving top language for '{username}': {e}")
+            return None
+
+
+class GitHubActivityService:
     def __init__(self) -> None:
-        self.base_url = "https://api.github.com"
+        self.api_url = "https://api.github.com"
 
     @property
     def headers(self):
@@ -19,39 +58,65 @@ class GitHubConnector(ConnectorService):
             "Accept": "application/vnd.github.v3+json",
         }
 
-    def follow(self, username: str, delay: int | None):
-        url = f"{self.base_url}/user/following/{username}"
-        try:
-            response = requests.put(url, headers=self.headers)
+    def _fetch_paginated_data(self, endpoint: str, method: HttpMethod) -> list[dict]:
+        """
+        Fetch paginated data from the GitHub API.
 
+        :param endpoint: The API endpoint to fetch data from.
+        :param method: HTTP method to use for the request.
+        :return: List of data retrieved from all pages.
+        """
+        data = []
+        page = 1
+        per_page = 100
+        url = self.api_url + endpoint
+
+        while True:
+            params = {"page": page, "per_page": per_page}
+            response = requests.request(
+                method=method.value,
+                url=url,
+                headers=self.headers,
+                params=params,
+            )
             response.raise_for_status()
+            page_data = response.json()
 
-            if response.text == "":
-                logger.info(f"You has been following to {username}")
-            else:
-                logger.info(f"You has been already subscribed for {username}")
+            if not page_data:
+                break
 
-            if delay:
-                sleep(delay)
-        except Exception as e:
-            logger.exception(f"Following {username} exception: {str(e)}")
+            data.extend(page_data)
+            page += 1
 
-    def unfollow(self, username: str):
-        url = f"{self.base_url}/user/following/{username}"
-        try:
-            response = requests.delete(url, headers=self.headers)
-            response.raise_for_status()
-            if response.status_code != 200:
-                logger.debug(f"You has been already unsubscribed for {username}")
-            else:
-                logger.debug(f"You has been unfollowed {username}")
-        except Exception as e:
-            logger.exception(f"Unfollow {username} exception: {str(e)}")
+        return data
+
+    def get_followers(self, username: str) -> list[dict]:
+        """
+        Get a list of followers for a given GitHub username.
+
+        :param username: GitHub username to get followers for.
+        :return: List of followers.
+        """
+        endpoint = f"/users/{username}/followers"
+        return self._fetch_paginated_data(endpoint, HttpMethod.GET)
+
+    def get_following(self, username: str) -> list[dict]:
+        """
+        Get a list of users that a given GitHub username is following.
+
+        :param username: GitHub username to get followings for.
+        :return: List of users that the given username is following.
+        """
+        endpoint = f"/users/{username}/following"
+        return self._fetch_paginated_data(endpoint, HttpMethod.GET)
 
 
-class OrganizationConnector:
-    def __init__(self) -> None:
-        self.base_url = "https://api.github.com"
+class GitHubConnectorService:
+    def __init__(self):
+        """
+        Initialize the GitHubConnectorService.
+        """
+        self.api_url = "https://api.github.com/"
 
     @property
     def headers(self):
@@ -60,66 +125,81 @@ class OrganizationConnector:
             "Accept": "application/vnd.github.v3+json",
         }
 
-    def receive_followers(self, username: str):
-        url = f"{self.base_url}/users/{username}/followers"
-        page = 1
-        per_page = 100
-        followers = []
-        try:
-            while True:
-                params = {"page": page, "per_page": per_page}
-                response = requests.get(url, headers=self.headers, params=params)
-                response.raise_for_status()
+    def _execute_request(
+        self,
+        url: str,
+        method: str = "GET",
+        data: dict = None,
+        params: dict = None,
+        retries: int = 1,
+        timeout: int = 5,
+    ):
+        """
+        Execute an HTTP request with error handling and retries.
 
-                current_followers = response.json()
-                if not current_followers:
-                    break
+        :param url: The endpoint URL.
+        :param method: The HTTP method (GET, POST, PUT, DELETE).
+        :param data: The data to send with the request (for POST/PUT).
+        :param params: URL parameters (for GET requests).
+        :param retries: Number of retry attempts on failure.
+        :param timeout: Timeout in seconds for the request.
+        :return: Response object or None in case of failure.
+        """
+        composed_url = self.api_url + url
+        attempt = 0
+        while attempt < retries:
+            try:
+                response = requests.request(
+                    method=method,
+                    url=composed_url,
+                    headers=self.headers,
+                    data=data,
+                    params=params,
+                    timeout=timeout,
+                )
+                response.raise_for_status()  # Raises HTTPError for bad responses (4xx and 5xx)
+                return response
+            except HTTPError as http_err:
+                logger.error(f"HTTP error occurred: {http_err}")
+            except Timeout as timeout_err:
+                logger.error(f"Request timed out: {timeout_err}")
+            except RequestException as req_err:
+                logger.error(f"Request error occurred: {req_err}")
+            except Exception as e:
+                logger.error(f"An unexpected error occurred: {e}")
 
-                followers.extend(current_followers)
-                page += 1
+            attempt += 1
+            logger.info(f"Retrying... ({attempt}/{retries})")
 
-            return followers
-        except requests.exceptions.RequestException as e:
-            logger.exception(f"Error fetching followers for '{username}': {e}")
-            return None
+        logger.error(f"Failed to execute request after {retries} attempts.")
+        return None
 
-    def receive_following(self, username: str) -> list:
-        url = f"{self.base_url}/users/{username}/following"
-        page = 1
-        per_page = 100
-        followers = []
-        try:
-            while True:
-                params = {"page": page, "per_page": per_page}
-                response = requests.get(url, headers=self.headers, params=params)
-                response.raise_for_status()
+    def follow(self, username):
+        """
+        Follow a user by their GitHub username.
 
-                current_followers = response.json()
-                if not current_followers:
-                    break
+        :param username: The username of the GitHub user to follow
+        """
+        endpoint = f"/user/following/{username}"
+        response = self._execute_request(endpoint, HttpMethod.PUT)
+        if response.status_code == 204:
+            print(f"Successfully followed {username}")
+        else:
+            print(
+                f"Failed to follow {username}: {response.status_code} {response.text}"
+            )
 
-                followers.extend(current_followers)
-                page += 1
+    def unfollow(self, username):
+        """
+        Unfollow a user by their GitHub username.
 
-            return followers
-        except requests.exceptions.RequestException as e:
-            logger.exception(f"Error fetching followers for '{username}': {e}")
-            return None
-
-    def get_follower_top_lang(self, username: str) -> str:
-        try:
-            url = f"https://github-readme-stats.vercel.app/api/top-langs/?username={username}&theme=vue-dark&show_icons=true&hide_border=true&layout=compact&langs_count=1"
-            response = requests.get(url)
-            response.raise_for_status()
-
-            lines = response.content.splitlines()
-
-            for line in lines:
-                decoded_line = line.decode("utf-8")
-
-                index = decoded_line.find("100.00%")
-                if index != -1:
-                    left_content = decoded_line[:index].strip()
-                    return left_content
-        except Exception:
-            return None
+        :param username: The username of the GitHub user to unfollow
+        """
+        endpoint = f"/user/following/{username}"
+        response = self._execute_request(endpoint, HttpMethod.DELETE)
+        if response.status_code == requests.status_codes:
+            print(f"Successfully unfollow {username}")
+        else:
+            print(
+                f"Failed to unfollow {username}: {response.status_code} {response.text}"
+            )
