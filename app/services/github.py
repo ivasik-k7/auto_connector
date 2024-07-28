@@ -1,3 +1,5 @@
+from http import HTTPMethod, HTTPStatus
+
 import requests
 from requests.adapters import HTTPAdapter
 from requests.exceptions import HTTPError, RequestException, Timeout
@@ -128,7 +130,7 @@ class GitHubConnectorService:
     def _execute_request(
         self,
         url: str,
-        method: str = "GET",
+        method: HTTPMethod = HTTPMethod.GET,
         data: dict = None,
         params: dict = None,
         retries: int = 1,
@@ -157,7 +159,7 @@ class GitHubConnectorService:
                     params=params,
                     timeout=timeout,
                 )
-                response.raise_for_status()  # Raises HTTPError for bad responses (4xx and 5xx)
+                response.raise_for_status()
                 return response
             except HTTPError as http_err:
                 logger.error(f"HTTP error occurred: {http_err}")
@@ -181,8 +183,8 @@ class GitHubConnectorService:
         :param username: The username of the GitHub user to follow
         """
         endpoint = f"/user/following/{username}"
-        response = self._execute_request(endpoint, HttpMethod.PUT)
-        if response.status_code == 204:
+        response = self._execute_request(endpoint, HTTPMethod.PUT)
+        if response.status_code and response.status_code == HTTPStatus.NO_CONTENT:
             print(f"Successfully followed {username}")
         else:
             print(
@@ -196,8 +198,8 @@ class GitHubConnectorService:
         :param username: The username of the GitHub user to unfollow
         """
         endpoint = f"/user/following/{username}"
-        response = self._execute_request(endpoint, HttpMethod.DELETE)
-        if response.status_code == requests.status_codes:
+        response = self._execute_request(endpoint, HTTPMethod.DELETE)
+        if response.status_code and response.status_code == HTTPStatus.OK:
             print(f"Successfully unfollow {username}")
         else:
             print(

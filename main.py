@@ -21,7 +21,7 @@ def main():
         svc = GitHubConnectorService()
         fs = MultiThreadStorage("examples/profiles.csv")
 
-        for profile in fs.query(lambda x: x.get("lang") == "Java"):
+        for profile in fs.query(lambda x: x.get("lang") == "C")[::-1]:
             interval = randint(1, 7)
             username = profile.get("login")
             svc.follow(username)
