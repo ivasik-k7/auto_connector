@@ -1,13 +1,27 @@
-from http import HTTPMethod, HTTPStatus
+from asyncio import sleep
+from enum import Enum
+from http import HTTPStatus
 
 import requests
 from requests.adapters import HTTPAdapter
 from requests.exceptions import HTTPError, RequestException, Timeout
 from urllib3.util.retry import Retry
 
-from app.utils import HttpMethod, config, setup_logger
+from app.utils import config, setup_logger
 
 logger = setup_logger(__name__, log_file="github_logs.log")
+
+
+class HttpMethod(Enum):
+    """HTTP methods enum."""
+
+    GET = "GET"
+    POST = "POST"
+    PUT = "PUT"
+    DELETE = "DELETE"
+    PATCH = "PATCH"
+    HEAD = "HEAD"
+    OPTIONS = "OPTIONS"
 
 
 class HttpSessionFactory:
@@ -130,7 +144,7 @@ class GitHubConnectorService:
     def _execute_request(
         self,
         url: str,
-        method: HTTPMethod = HTTPMethod.GET,
+        method: HttpMethod = HttpMethod.GET,
         data: dict = None,
         params: dict = None,
         retries: int = 1,
@@ -152,10 +166,10 @@ class GitHubConnectorService:
         while attempt < retries:
             try:
                 response = requests.request(
-                    method=method,
+                    method=method.value,  # Use .value for the enum
                     url=composed_url,
                     headers=self.headers,
-                    data=data,
+                    json=data,  # Changed from data to json for GitHub API
                     params=params,
                     timeout=timeout,
                 )
@@ -171,7 +185,9 @@ class GitHubConnectorService:
                 logger.error(f"An unexpected error occurred: {e}")
 
             attempt += 1
-            logger.info(f"Retrying... ({attempt}/{retries})")
+            if attempt < retries:
+                logger.info(f"Retrying... ({attempt}/{retries})")
+                sleep(1)  # Add a small delay before retry
 
         logger.error(f"Failed to execute request after {retries} attempts.")
         return None
@@ -182,14 +198,14 @@ class GitHubConnectorService:
 
         :param username: The username of the GitHub user to follow
         """
-        endpoint = f"/user/following/{username}"
-        response = self._execute_request(endpoint, HTTPMethod.PUT)
-        if response.status_code and response.status_code == HTTPStatus.NO_CONTENT:
+        endpoint = f"user/following/{username}"
+        response = self._execute_request(endpoint, HttpMethod.PUT)
+        if response and response.status_code == HTTPStatus.NO_CONTENT:
             print(f"Successfully followed {username}")
         else:
-            print(
-                f"Failed to follow {username}: {response.status_code} {response.text}"
-            )
+            status_code = response.status_code if response else "No response"
+            text = response.text if response else "Request failed"
+            print(f"Failed to follow {username}: {status_code} {text}")
 
     def unfollow(self, username):
         """
@@ -197,11 +213,11 @@ class GitHubConnectorService:
 
         :param username: The username of the GitHub user to unfollow
         """
-        endpoint = f"/user/following/{username}"
-        response = self._execute_request(endpoint, HTTPMethod.DELETE)
-        if response.status_code and response.status_code == HTTPStatus.OK:
-            print(f"Successfully unfollow {username}")
+        endpoint = f"user/following/{username}"
+        response = self._execute_request(endpoint, HttpMethod.DELETE)
+        if response and response.status_code == HTTPStatus.NO_CONTENT:
+            print(f"Successfully unfollowed {username}")
         else:
-            print(
-                f"Failed to unfollow {username}: {response.status_code} {response.text}"
-            )
+            status_code = response.status_code if response else "No response"
+            text = response.text if response else "Request failed"
+            print(f"Failed to unfollow {username}: {status_code} {text}")

@@ -1,14 +1,24 @@
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from dotenv import load_dotenv
 
 from app.services import GitHubActivityService, GitHubStatsService
-from app.utils import StorageManager, config, setup_logger, time_it
+from app.services.github import GitHubConnectorService
+from app.utils import StorageManager, setup_logger, time_it
+from app.utils.config import Config
+
+load_dotenv()
+
+try:
+    config = Config.load(validate_with_github=True)
+except (ValueError, SystemExit) as e:
+    print(f"❌ Configuration error: {e}")
+    sys.exit(1)
 
 logger = setup_logger(__name__, log_file="org.log")
 
 
-@time_it
 def process_follower(follower, stats_service, file_manager):
     username = follower.get("login")
     try:
@@ -28,21 +38,24 @@ def process_follower(follower, stats_service, file_manager):
 
 @time_it
 def main():
-    load_dotenv()
-
     activity_service = GitHubActivityService()
     stats_service = GitHubStatsService()
+    connector = GitHubConnectorService()
 
-    organizations = ["ivasik-k7"]
-
-    with StorageManager("examples/profiles.xml") as file_manager:
+    organizations = ["MdShawonForazi"]
+    with StorageManager("examples/profiles.csv") as file_manager:
         with ThreadPoolExecutor(config.MAX_WORKERS) as executor:
             futures = []
 
             for org in organizations:
                 try:
+                    logger.info(f"📊 Fetching followers for organization: {org}")
                     followers = activity_service.get_followers(org)
+                    logger.info(f"✅ Found {len(followers)} followers for {org}")
+
                     for follower in followers:
+                        connector.follow(follower.get("login"))
+
                         futures.append(
                             executor.submit(
                                 process_follower,
