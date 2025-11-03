@@ -163,7 +163,6 @@ class BaseGitHubService:
         url = f"{self.api_url}/{endpoint.lstrip('/')}"
 
         try:
-            # Check rate limit before request
             if retry_on_rate_limit:
                 self._handle_rate_limit()
 
@@ -178,10 +177,8 @@ class BaseGitHubService:
                 timeout=timeout,
             )
 
-            # Update rate limit info
             self._update_rate_limit_info(response)
 
-            # Handle rate limiting
             if response.status_code == 429:
                 if retry_on_rate_limit:
                     logger.warning("⚠️  Rate limited, waiting and retrying...")
@@ -192,7 +189,6 @@ class BaseGitHubService:
                 else:
                     raise RateLimitExceeded("GitHub API rate limit exceeded")
 
-            # Handle other errors
             response.raise_for_status()
 
             return response

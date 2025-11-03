@@ -40,21 +40,6 @@ A high-performance, flexible, and feature-rich tool for synchronizing and managi
 - Duplicate follow prevention
 - Comprehensive error handling and logging
 
-## 📦 Installation
-
-```bash
-# Clone the repository
-git clone <repository-url>
-cd github-follower-sync
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Copy and configure environment file
-cp .env.example .env
-# Edit .env with your GitHub token and settings
-```
-
 ## 🔑 GitHub Token Setup
 
 1. Go to [GitHub Settings → Tokens](https://github.com/settings/tokens)

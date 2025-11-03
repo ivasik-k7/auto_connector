@@ -16,6 +16,7 @@ from app.services import GitHubActivityService, GitHubStatsService
 from app.services.github import GitHubConnectorService
 from app.utils import StorageManager, setup_logger, time_it
 from app.utils.config import Config
+from app.utils.storage import BackupStrategy, MultiThreadStorage, StorageMode
 
 load_dotenv()
 
@@ -130,6 +131,10 @@ class UserProfile:
     # Processing metadata
     enrichment_level: str = "basic"
     processing_time: float = 0.0
+    processed_at: str = field(
+        default_factory=lambda: time.strftime("%Y-%m-%d %H:%M:%S")
+    )
+    organization: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for storage."""
@@ -152,6 +157,8 @@ class UserProfile:
             "created_at": self.created_at,
             "enrichment_level": self.enrichment_level,
             "processing_time": f"{self.processing_time:.2f}s",
+            "processed_at": self.processed_at,
+            "organization": self.organization,
         }
 
 
@@ -164,13 +171,19 @@ class UserEnricher:
         self._cache: Dict[str, UserProfile] = {}
         self._cache_lock = Lock()
 
-    def enrich_user(self, username: str, follower_data: Dict[str, Any]) -> UserProfile:
+    def enrich_user(
+        self,
+        username: str,
+        follower_data: Dict[str, Any],
+        organization: Optional[str] = None,
+    ) -> UserProfile:
         """
         Enrich user profile based on processing strategy.
 
         Args:
             username: GitHub username
             follower_data: Basic follower data from API
+            organization: Source organization
 
         Returns:
             Enriched UserProfile
@@ -179,7 +192,10 @@ class UserEnricher:
         with self._cache_lock:
             if username in self._cache:
                 logger.debug(f"📦 Cache hit for {username}")
-                return self._cache[username]
+                cached_profile = self._cache[username]
+                if organization:
+                    cached_profile.organization = organization
+                return cached_profile
 
         start_time = time.time()
 
@@ -188,6 +204,7 @@ class UserEnricher:
             id=follower_data.get("id"),
             url=follower_data.get("html_url", f"https://github.com/{username}"),
             avatar_url=follower_data.get("avatar_url"),
+            organization=organization,
         )
 
         try:
@@ -245,13 +262,17 @@ class UserEnricher:
         profile.social_links = details.get("social_links", {})
 
     def batch_enrich(
-        self, followers: List[Dict[str, Any]], max_workers: int = 10
+        self,
+        followers: List[Dict[str, Any]],
+        organization: Optional[str] = None,
+        max_workers: int = 10,
     ) -> List[UserProfile]:
         """
         Enrich multiple users concurrently.
 
         Args:
             followers: List of follower data
+            organization: Source organization
             max_workers: Maximum concurrent workers
 
         Returns:
@@ -262,7 +283,7 @@ class UserEnricher:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
                 executor.submit(
-                    self.enrich_user, follower.get("login"), follower
+                    self.enrich_user, follower.get("login"), follower, organization
                 ): follower
                 for follower in followers
                 if follower.get("login")
@@ -348,7 +369,6 @@ class FollowFilter:
             if any(kw.lower() in bio_lower for kw in self.exclude_keywords):
                 return False, "Contains excluded keywords"
 
-        # Account age filter
         if self.min_account_age_days > 0 and profile.created_at:
             try:
                 from datetime import datetime
@@ -362,7 +382,6 @@ class FollowFilter:
             except Exception as e:
                 logger.debug(f"Could not parse account age: {e}")
 
-        # Custom filter
         if self.custom_filter:
             try:
                 if not self.custom_filter(profile):
@@ -394,23 +413,25 @@ class FollowerProcessor:
         self.enricher = UserEnricher(stats_service, strategy)
         self.metrics = ProcessingMetrics()
 
-        # Load follow configuration
         follow_config = getattr(config, "FOLLOW_CONFIG", {"enabled": False})
         self.follow_filter = FollowFilter(follow_config)
 
-        # Track already following to avoid duplicate API calls
         self._following_cache: Set[str] = set()
         self._following_cache_lock = Lock()
 
     def process_follower(
-        self, follower: Dict[str, Any], file_manager: StorageManager
+        self,
+        follower: Dict[str, Any],
+        storage: MultiThreadStorage,
+        organization: Optional[str] = None,
     ) -> Optional[UserProfile]:
         """
         Process a single follower with enrichment and follow decision.
 
         Args:
             follower: Follower data from GitHub API
-            file_manager: Storage manager for persistence
+            storage: MultiThreadStorage instance for persistence
+            organization: Source organization name
 
         Returns:
             Processed UserProfile or None on failure
@@ -422,16 +443,13 @@ class FollowerProcessor:
             return None
 
         try:
-            # Enrich user profile
-            profile = self.enricher.enrich_user(username, follower)
+            profile = self.enricher.enrich_user(username, follower, organization)
 
-            # Make follow decision
             if self.follow_filter.enabled:
                 decision, reason = self._make_follow_decision(profile)
                 self._handle_follow_decision(decision, username, reason)
 
-            # Save to storage
-            file_manager.add(profile.to_dict())
+            storage.add(profile.to_dict())
 
             self.metrics.increment("processed")
             logger.info(
@@ -447,14 +465,57 @@ class FollowerProcessor:
             self.metrics.increment("failed")
             return None
 
+    def process_follower_batch(
+        self,
+        followers: List[Dict[str, Any]],
+        storage: MultiThreadStorage,
+        organization: Optional[str] = None,
+    ) -> int:
+        """
+        Process multiple followers in batch for better performance.
+
+        Args:
+            followers: List of follower data
+            storage: MultiThreadStorage instance
+            organization: Source organization
+
+        Returns:
+            Number of successfully processed followers
+        """
+        profiles = []
+        successful = 0
+
+        for follower in followers:
+            username = follower.get("login")
+            if not username:
+                continue
+
+            try:
+                profile = self.enricher.enrich_user(username, follower, organization)
+
+                if self.follow_filter.enabled:
+                    decision, reason = self._make_follow_decision(profile)
+                    self._handle_follow_decision(decision, username, reason)
+
+                profiles.append(profile.to_dict())
+                successful += 1
+                self.metrics.increment("processed")
+
+            except Exception as e:
+                logger.error(f"❌ Failed to process {username}: {e}")
+                self.metrics.increment("failed")
+
+        if profiles:
+            storage.add_batch(profiles)
+
+        return successful
+
     def _make_follow_decision(self, profile: UserProfile) -> tuple[FollowDecision, str]:
         """Make decision about following a user."""
-        # Check if already following
         with self._following_cache_lock:
             if profile.username in self._following_cache:
                 return FollowDecision.ALREADY_FOLLOWING, "Already following"
 
-        # Apply filters
         should_follow, reason = self.follow_filter.should_follow(profile)
 
         if should_follow:
@@ -491,7 +552,6 @@ class FollowerProcessor:
         """Pre-load list of users we're already following."""
         try:
             logger.info("📥 Loading existing following list...")
-            # Get authenticated user
             response = self.activity_service._execute_request("user")
             if response and response.status_code == 200:
                 current_user = response.json()["login"]
@@ -505,14 +565,14 @@ class FollowerProcessor:
             logger.warning(f"Could not load following list: {e}")
 
     def process_organization(
-        self, org: str, file_manager: StorageManager, max_workers: Optional[int] = None
+        self, org: str, storage: MultiThreadStorage, max_workers: Optional[int] = None
     ):
         """
         Process all followers from an organization.
 
         Args:
             org: Organization name
-            file_manager: Storage manager
+            storage: MultiThreadStorage instance
             max_workers: Override default max workers
         """
         try:
@@ -526,25 +586,46 @@ class FollowerProcessor:
             logger.info(f"✅ Found {len(followers)} followers for {org}")
             self.metrics.total_users += len(followers)
 
-            # Process concurrently
-            workers = max_workers or self.config.MAX_WORKERS
-            with ThreadPoolExecutor(max_workers=workers) as executor:
-                futures = {
-                    executor.submit(
-                        self.process_follower, follower, file_manager
-                    ): follower
-                    for follower in reversed(followers)
-                }
+            batch_size = 50
+            for i in range(0, len(followers), batch_size):
+                batch = followers[i : i + batch_size]
+                successful = self.process_follower_batch(batch, storage, org)
+                logger.info(
+                    f"📦 Processed batch {i // batch_size + 1}: {successful}/{len(batch)} successful"
+                )
 
-                for future in as_completed(futures):
-                    try:
-                        future.result()
-                    except Exception as e:
-                        logger.error(f"Executor error: {e}", exc_info=True)
-                        self.metrics.increment("failed")
+            # Alternative: Concurrent processing for smaller datasets
+            # workers = max_workers or self.config.MAX_WORKERS
+            # with ThreadPoolExecutor(max_workers=workers) as executor:
+            #     futures = {
+            #         executor.submit(
+            #             self.process_follower, follower, storage, org
+            #         ): follower
+            #         for follower in reversed(followers)
+            #     }
+            #
+            #     for future in as_completed(futures):
+            #         try:
+            #             future.result()
+            #         except Exception as e:
+            #             logger.error(f"Executor error: {e}", exc_info=True)
+            #             self.metrics.increment("failed")
 
         except Exception as e:
             logger.error(f"❌ Error processing organization {org}: {e}", exc_info=True)
+
+    def get_processing_stats(self) -> Dict[str, Any]:
+        """Get current processing statistics."""
+        return {
+            "total_users": self.metrics.total_users,
+            "processed": self.metrics.processed,
+            "failed": self.metrics.failed,
+            "followed": self.metrics.followed,
+            "skipped": self.metrics.skipped,
+            "already_following": self.metrics.already_following,
+            "elapsed_time": self.metrics.elapsed_time,
+            "processing_rate": self.metrics.processing_rate,
+        }
 
 
 @time_it
@@ -552,36 +633,51 @@ def main():
     """
     Main execution function with advanced configuration.
     """
-    # Initialize services
     activity_service = GitHubActivityService()
     stats_service = GitHubStatsService()
     connector = GitHubConnectorService()
 
-    # Configuration
     strategy = ProcessingStrategy(getattr(config, "PROCESSING_STRATEGY", "balanced"))
     organizations = getattr(config, "TARGET_ORGANIZATIONS", ["ivasik-k7"])
     output_file = getattr(config, "OUTPUT_FILE", "examples/profiles.csv")
 
-    logger.info(f"🚀 Starting Advanced Follower Sync")
+    logger.info("🚀 Starting Advanced Follower Sync")
     logger.info(f"   Strategy: {strategy.value}")
     logger.info(f"   Organizations: {organizations}")
     logger.info(f"   Max Workers: {config.MAX_WORKERS}")
 
-    # Initialize processor
     processor = FollowerProcessor(
         activity_service, stats_service, connector, config, strategy
     )
 
-    # Pre-load following list to avoid duplicate follows
     processor.load_existing_following()
 
-    # Process all organizations
-    with StorageManager(output_file) as file_manager:
+    with StorageManager(
+        file_path=output_file,
+        autosave=True,  # Enable automatic saving
+        save_interval=30,  # Save every 30 seconds
+        backup_strategy=BackupStrategy.TIMESTAMPED,  # Create timestamped backups
+        max_backups=3,  # Keep only 3 backups
+        mode=StorageMode.APPEND,  # Append to existing data
+        validate_on_load=True,  # Validate data structure
+        required_keys=["login", "id"],  # Required fields
+        fallback_formats=[".json", ".csv", ".jsonl"],  # Fallback formats
+    ) as storage:  # This 'storage' is already the MultiThreadStorage instance
         for org in organizations:
-            processor.process_organization(org, file_manager)
+            processor.process_organization(org, storage)
 
-    # Print summary
+        stats = processor.get_processing_stats()
+        logger.info(
+            f"📊 Intermediate stats: {stats['processed']}/{stats['total_users']} processed"
+        )
+
     logger.info(processor.metrics.summary())
+
+    storage_metadata = storage.get_metadata()
+    logger.info(
+        f"💾 Storage Metadata: {storage_metadata['total_items']} items, "
+        f"last save: {storage_metadata['last_save']}"
+    )
 
     return processor.metrics
 
