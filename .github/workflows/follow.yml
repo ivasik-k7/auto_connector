@@ -1,0 +1,121 @@
+name: GitHub Follower Sync
+
+on:
+  push:
+    branches: [master]
+
+  schedule:
+    - cron: "0 8-17 * * 1-5"
+
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run mode (no actual follows)"
+        type: boolean
+        default: true
+      max_follows:
+        description: "Maximum users to follow"
+        type: number
+        default: 25
+      strategy:
+        description: "Processing strategy"
+        type: choice
+        options:
+          - fast
+          - balanced
+          - comprehensive
+        default: balanced
+
+env:
+  PYTHON_VERSION: "3.9"
+  CI: "true" # Force CI environment detection
+
+jobs:
+  follower-sync:
+    name: Follower Sync Pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: 1.7.1
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-root
+
+      - name: Install project
+        run: poetry install --no-interaction
+
+      - name: Create directories
+        run: |
+          mkdir -p results logs data examples
+
+      - name: Run follower sync with Poetry
+        id: sync
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_SECRET }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
+          PROCESSING_STRATEGY: ${{ github.event.inputs.strategy || 'fast' }}
+          MAX_FOLLOWS_PER_RUN: ${{ github.event.inputs.max_follows || 25 }}
+          LOG_LEVEL: INFO
+          LOG_FILE: logs/follower_sync_${{ github.run_id }}.log
+          OUTPUT_FILE: results/profiles_${{ github.run_id }}.csv
+          MAX_WORKERS: 3
+          BATCH_SIZE: 20
+          FOLLOW_ENABLED: true
+          FOLLOW_MIN_REPOS: 1
+          FOLLOW_MIN_FOLLOWERS: 1
+          FOLLOW_DELAY: 1.5
+        run: |
+          echo "🚀 Starting Follower Sync..."
+          echo "Dry Run: $DRY_RUN"
+          echo "Strategy: $PROCESSING_STRATEGY"
+          echo "Max Follows: $MAX_FOLLOWS_PER_RUN"
+
+          # Run the script using Poetry
+          poetry run python follow.py 2>&1 | tee logs/execution_${{ github.run_id }}.log
+
+          SYNC_EXIT_CODE=${PIPESTATUS[0]}
+          echo "exit_code=$SYNC_EXIT_CODE" >> $GITHUB_OUTPUT
+
+          if [ $SYNC_EXIT_CODE -eq 0 ]; then
+            echo "✅ Follower sync completed successfully"
+          else
+            echo "❌ Follower sync failed with exit code: $SYNC_EXIT_CODE"
+          fi
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: follower-sync-results-${{ github.run_id }}
+          path: |
+            results/
+            logs/
+            data/
+          retention-days: 7
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "📋 Pipeline Summary"
+          echo "=================="
+          echo "Workflow: ${{ github.workflow }}"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "Dry Run: ${{ github.event.inputs.dry_run }}"
+          echo "Strategy: ${{ github.event.inputs.strategy }}"
+          echo "Exit Code: ${{ steps.sync.outputs.exit_code }}"
+          echo ""
+          echo "Artifacts: follower-sync-results-${{ github.run_id }}"

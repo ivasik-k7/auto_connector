@@ -2,6 +2,7 @@
 Advanced GitHub Follower Sync with Enhanced Concurrency and Flexibility
 """
 
+import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -13,6 +14,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 from dotenv import load_dotenv
 
 from app.services import GitHubActivityService, GitHubStatsService
+from app.services.gh_candidate import GitHubCandidateService
 from app.services.github import GitHubConnectorService
 from app.utils import StorageManager, setup_logger, time_it
 from app.utils.config import Config
@@ -335,31 +337,21 @@ class FollowFilter:
         if not self.enabled:
             return False, "Auto-follow disabled"
 
-        # Whitelist takes priority
         if self.whitelist and profile.username in self.whitelist:
             return True, "Whitelisted user"
 
-        # Blacklist check
         if profile.username in self.blacklist:
             return False, "Blacklisted user"
 
-        # Language filter
         if self.languages and profile.top_language not in self.languages:
             return False, f"Language mismatch: {profile.top_language}"
 
-        # Repository count filter
-        if not (self.min_repos <= profile.public_repos <= self.max_repos):
+        if not (profile.public_repos <= self.max_repos):
             return False, f"Repo count: {profile.public_repos}"
 
-        # Follower count filter
-        if not (self.min_followers <= profile.followers <= self.max_followers):
+        if not (profile.followers <= self.max_followers):
             return False, f"Follower count: {profile.followers}"
 
-        # Following count filter
-        if profile.following < self.min_following:
-            return False, f"Following count: {profile.following}"
-
-        # Keyword filters
         bio_lower = (profile.bio or "").lower()
         if self.required_keywords:
             if not any(kw.lower() in bio_lower for kw in self.required_keywords):
@@ -636,9 +628,40 @@ def main():
     activity_service = GitHubActivityService()
     stats_service = GitHubStatsService()
     connector = GitHubConnectorService()
+    candidate_service = GitHubCandidateService(max_followers=5000)
+    candidate = candidate_service.get_random_candidate()
+
+    is_ci_cd = any(
+        [
+            os.environ.get("CI"),
+            os.environ.get("GITHUB_ACTIONS"),
+            os.environ.get("GITLAB_CI"),
+            os.environ.get("JENKINS_HOME"),
+            os.environ.get("BITBUCKET_BUILD_NUMBER"),
+            os.environ.get("CIRCLECI"),
+            os.environ.get("TRAVIS"),
+        ]
+    )
+
+    if is_ci_cd:
+        candidate = candidate_service.get_random_candidate()
+        organizations = [candidate.username]
+        logger.info(
+            f"🔧 CI/CD Environment detected - using random candidate: {candidate.username}"
+        )
+    else:
+        candidate = None
+        organizations = getattr(config, "TARGET_ORGANIZATIONS", ["ivasik-k7"])
+        if not organizations:
+            logger.info(
+                "💻 Local Environment - no organizations configured, please set TARGET_ORGANIZATIONS"
+            )
+        else:
+            logger.info(
+                f"💻 Local Environment - using configured organizations: {organizations}"
+            )
 
     strategy = ProcessingStrategy(getattr(config, "PROCESSING_STRATEGY", "balanced"))
-    organizations = getattr(config, "TARGET_ORGANIZATIONS", ["ivasik-k7"])
     output_file = getattr(config, "OUTPUT_FILE", "examples/profiles.csv")
 
     logger.info("🚀 Starting Advanced Follower Sync")

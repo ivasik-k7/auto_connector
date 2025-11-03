@@ -715,14 +715,7 @@ class GitHubConnectorService(BaseGitHubService):
             endpoint = f"user/following/{username}"
             response = self._execute_request(endpoint, HttpMethod.PUT)
 
-            if response and response.status_code == HTTPStatus.NO_CONTENT:
-                logger.info(f"✅ Successfully followed {username}")
-                return True
-            else:
-                status = response.status_code if response else "No response"
-                logger.warning(f"⚠️  Failed to follow {username}: {status}")
-                return False
-
+            return response and response.status_code == HTTPStatus.NO_CONTENT
         except GitHubAPIException as e:
             logger.error(f"❌ Error following {username}: {e}")
             return False

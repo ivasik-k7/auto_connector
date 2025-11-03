@@ -1,7 +1,3 @@
-"""
-GitHub Follow Diff - Find and unfollow users who don't follow you back
-"""
-
 import argparse
 import sys
 import time
@@ -23,7 +19,7 @@ except (ValueError, SystemExit) as e:
     print(f"❌ Configuration error: {e}")
     sys.exit(1)
 
-logger = setup_logger(__name__, log_file="follow_diff.log")
+logger = setup_logger(__name__, log_file=config.LOG_FILE, level=config.LOG_LEVEL)
 
 
 @dataclass
@@ -42,6 +38,12 @@ class DiffMetrics:
         return time.time() - self.start_time
 
     def summary(self) -> str:
+        reciprocal_rate = (
+            (self.total_following - self.non_reciprocal) / self.total_following * 100
+            if self.total_following > 0
+            else 0
+        )
+
         return (
             f"\n{'=' * 70}\n"
             f"📊 Follow Diff Summary:\n"
@@ -52,7 +54,7 @@ class DiffMetrics:
             f"  Successfully Unfollowed: {self.unfollowed}\n"
             f"  Failed Unfollows:     {self.failed_unfollows}\n"
             f"  Duration:             {self.elapsed_time:.2f}s\n"
-            f"  Reciprocal Rate:      {(self.total_following - self.non_reciprocal) / self.total_following * 100:.1f}%\n"
+            f"  Reciprocal Rate:      {reciprocal_rate:.1f}%\n"
             f"{'=' * 70}\n"
         )
 
@@ -152,9 +154,7 @@ class FollowDiffAnalyzer:
         """
         try:
             # Use configurable delay between follows
-            if hasattr(self.config, "FOLLOW_CONFIG") and self.config.FOLLOW_CONFIG.get(
-                "delay_between_follows"
-            ):
+            if self.config.FOLLOW_CONFIG.get("delay_between_follows"):
                 time.sleep(self.config.FOLLOW_CONFIG["delay_between_follows"])
 
             success = self.connector_service.unfollow(username)
@@ -193,11 +193,11 @@ class FollowDiffAnalyzer:
             logger.info("🧪 DRY RUN MODE - No actual unfollows will be performed")
 
         # Use config values with fallbacks
-        workers = max_workers or getattr(self.config, "MAX_WORKERS", 5)
-        batch_size = getattr(self.config, "BATCH_SIZE", 50)
+        workers = max_workers or self.config.MAX_WORKERS
+        batch_size = self.config.BATCH_SIZE
 
         # Apply safety limits from config
-        max_unfollows = getattr(self.config, "MAX_FOLLOWS_PER_RUN", 100)
+        max_unfollows = self.config.MAX_FOLLOWS_PER_RUN
         if len(users) > max_unfollows:
             logger.warning(
                 f"⚠️  Limiting unfollows to {max_unfollows} (config: MAX_FOLLOWS_PER_RUN)"
@@ -209,7 +209,7 @@ class FollowDiffAnalyzer:
         )
 
         # Process in batches if configured
-        if getattr(self.config, "PROCESS_IN_BATCHES", False):
+        if self.config.PROCESS_IN_BATCHES:
             for i in range(0, len(users), batch_size):
                 batch = users[i : i + batch_size]
                 logger.info(
@@ -319,9 +319,6 @@ class FollowDiffAnalyzer:
         Returns:
             Filtered list of users
         """
-        if not hasattr(self.config, "FOLLOW_CONFIG"):
-            return users
-
         follow_config = self.config.FOLLOW_CONFIG
         filtered_users = []
 
@@ -339,7 +336,6 @@ class FollowDiffAnalyzer:
                 continue
 
             # For other users, apply normal filtering logic
-            # (You could add more sophisticated filtering here based on user data)
             filtered_users.append(user)
 
         logger.info(f"🔧 Filters applied: {len(users)} -> {len(filtered_users)} users")
@@ -369,10 +365,19 @@ def main():
     parser.add_argument(
         "--apply-filters", action="store_true", help="Apply FOLLOW_CONFIG filters"
     )
+    parser.add_argument(
+        "--config-file", type=str, help="Load configuration from JSON file"
+    )
 
     args = parser.parse_args()
 
-    dry_run = args.dry_run or getattr(config, "DRY_RUN", False)
+    # Load config from file if specified
+    if args.config_file:
+        config = Config.from_file(args.config_file)
+    else:
+        config = Config.load(validate_with_github=True)
+
+    dry_run = config.DRY_RUN
 
     activity_service = GitHubActivityService()
     connector_service = GitHubConnectorService()

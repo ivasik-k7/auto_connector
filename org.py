@@ -196,7 +196,6 @@ def main():
         },
     )
 
-    # Organizations to monitor (could be from config)
     organizations = getattr(config, "TARGET_ORGANIZATIONS", ["ivasik-k7"])
 
     logger.info(f"🚀 Starting follower sync for organizations: {organizations}")
@@ -220,13 +219,11 @@ def main():
                         if not username:
                             continue
 
-                        # Get user info first to determine if we should follow
                         user_info = get_user_info_safe(stats_service, username)
                         should_follow = follow_config.get(
                             "enabled", False
                         ) and should_follow_user(username, user_info, follow_config)
 
-                        # Follow the user if conditions are met
                         if should_follow:
                             try:
                                 connector.follow(username)
