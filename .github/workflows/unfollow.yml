@@ -1,0 +1,148 @@
+name: Unfollow Non-Reciprocal Users
+
+on:
+  schedule:
+    - cron: "0 23 * * 1-5"
+
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run in dry-run mode (no actual unfollows)"
+        required: false
+        type: boolean
+        default: true
+      max_unfollows:
+        description: "Maximum number of users to unfollow"
+        required: false
+        type: number
+        default: 100
+      follow_delay:
+        description: "Delay between unfollows (seconds)"
+        required: false
+        type: number
+        default: 1.0
+
+jobs:
+  unfollow-cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 📦 Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: 1.7.1
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: 💾 Load cached venv
+        id: cached-poetry-dependencies
+        uses: actions/cache@v3
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+
+      - name: 📚 Install dependencies
+        if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
+        run: poetry install --no-interaction --no-root
+
+      - name: 📂 Create necessary directories
+        run: |
+          mkdir -p logs
+          mkdir -p out
+
+      - name: 🧹 Run follow cleanup
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_SECRET }}
+          DRY_RUN: "false"
+          MAX_FOLLOWS_PER_RUN: "1000"
+
+        run: |
+          echo "🚀 Starting unfollow cleanup..."
+          echo "Mode: ${{ github.event.inputs.dry_run == 'true' && 'DRY RUN' || 'LIVE' }}"
+          echo "Max unfollows: ${{ github.event.inputs.max_unfollows || env.MAX_FOLLOWS_PER_RUN }}"
+          echo ""
+          poetry run python diff.py
+
+      - name: 📊 Upload execution logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unfollow-logs-${{ github.run_number }}
+          path: logs/
+          retention-days: 30
+
+      - name: 📈 Upload cleanup reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unfollow-reports-${{ github.run_number }}
+          path: out/*_diff_report.csv
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: 📝 Generate summary
+        if: always()
+        run: |
+          echo "## 🧹 Unfollow Cleanup Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Run Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "- **Mode:** ${{ github.event.inputs.dry_run == 'true' && '🧪 Dry Run' || '⚠️ Live Mode' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Max Unfollows:** ${{ github.event.inputs.max_unfollows || '100' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Delay:** ${{ github.event.inputs.follow_delay || '1.0' }}s between unfollows" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ -f "logs/github_diff.log" ]; then
+            echo "### 📋 Last 20 Log Lines" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            tail -n 20 logs/github_diff.log >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ -f "out/profiles_diff_report.csv" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 📊 Report Generated" >> $GITHUB_STEP_SUMMARY
+            echo "✅ Cleanup report available in artifacts" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: 🚨 Create issue on failure
+        if: failure() && github.event_name == 'schedule'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '⚠️ Unfollow Cleanup Failed',
+              body: `## Automated Unfollow Cleanup Failed\n\n` +
+                    `The scheduled unfollow cleanup workflow encountered an error.\n\n` +
+                    `**Details:**\n` +
+                    `- Run ID: ${context.runId}\n` +
+                    `- Run URL: ${runUrl}\n` +
+                    `- Triggered by: ${context.eventName}\n` +
+                    `- Time: ${new Date().toISOString()}\n\n` +
+                    `**Action Required:**\n` +
+                    `1. Check the workflow logs for details\n` +
+                    `2. Verify your GitHub token is still valid\n` +
+                    `3. Check rate limits: https://github.com/settings/billing\n` +
+                    `4. Re-run the workflow manually if needed\n\n` +
+                    `[View Run](${runUrl})`,
+              labels: ['automation', 'bug', 'unfollow-cleanup']
+            });
+
+      - name: 🧪 Dry run notice
+        if: success() && github.event.inputs.dry_run == 'true'
+        run: |
+          echo "::notice::🧪 This was a DRY RUN - no actual unfollows were performed"
+          echo "::notice::To perform actual unfollows, set dry_run to false when running manually"

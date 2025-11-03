@@ -1,4 +1,3 @@
-import argparse
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -31,6 +30,8 @@ class DiffMetrics:
     non_reciprocal: int = 0
     unfollowed: int = 0
     failed_unfollows: int = 0
+    skipped_whitelist: int = 0
+    skipped_filters: int = 0
     start_time: float = field(default_factory=time.time)
 
     @property
@@ -48,13 +49,15 @@ class DiffMetrics:
             f"\n{'=' * 70}\n"
             f"📊 Follow Diff Summary:\n"
             f"{'=' * 70}\n"
-            f"  Total Following:      {self.total_following}\n"
-            f"  Total Followers:      {self.total_followers}\n"
-            f"  Non-reciprocal:       {self.non_reciprocal}\n"
+            f"  Total Following:         {self.total_following}\n"
+            f"  Total Followers:         {self.total_followers}\n"
+            f"  Non-reciprocal:          {self.non_reciprocal}\n"
+            f"  Skipped (whitelist):     {self.skipped_whitelist}\n"
+            f"  Skipped (filters):       {self.skipped_filters}\n"
             f"  Successfully Unfollowed: {self.unfollowed}\n"
-            f"  Failed Unfollows:     {self.failed_unfollows}\n"
-            f"  Duration:             {self.elapsed_time:.2f}s\n"
-            f"  Reciprocal Rate:      {reciprocal_rate:.1f}%\n"
+            f"  Failed Unfollows:        {self.failed_unfollows}\n"
+            f"  Duration:                {self.elapsed_time:.2f}s\n"
+            f"  Reciprocal Rate:         {reciprocal_rate:.1f}%\n"
             f"{'=' * 70}\n"
         )
 
@@ -62,6 +65,7 @@ class DiffMetrics:
 class FollowDiffAnalyzer:
     """
     Analyzes follow relationships and manages unfollow operations.
+    Designed for automated CI/CD execution.
     """
 
     def __init__(
@@ -174,7 +178,6 @@ class FollowDiffAnalyzer:
     def batch_unfollow(
         self,
         users: List[Dict],
-        max_workers: Optional[int] = None,
         dry_run: bool = False,
     ) -> None:
         """
@@ -182,7 +185,6 @@ class FollowDiffAnalyzer:
 
         Args:
             users: List of user dicts to unfollow
-            max_workers: Maximum concurrent workers
             dry_run: If True, only simulate without actual unfollowing
         """
         if not users:
@@ -192,8 +194,7 @@ class FollowDiffAnalyzer:
         if dry_run:
             logger.info("🧪 DRY RUN MODE - No actual unfollows will be performed")
 
-        # Use config values with fallbacks
-        workers = max_workers or self.config.MAX_WORKERS
+        workers = self.config.MAX_WORKERS
         batch_size = self.config.BATCH_SIZE
 
         # Apply safety limits from config
@@ -247,68 +248,6 @@ class FollowDiffAnalyzer:
                         logger.error(f"❌ Executor error for {username}: {e}")
                         self.metrics.failed_unfollows += 1
 
-    def analyze_reciprocity(self) -> Dict[str, any]:
-        """
-        Analyze follow reciprocity and return detailed statistics.
-
-        Returns:
-            Dictionary with analysis results
-        """
-        non_reciprocal = self.find_non_reciprocal_users()
-        reciprocal_count = self.metrics.total_following - self.metrics.non_reciprocal
-
-        return {
-            "total_following": self.metrics.total_following,
-            "total_followers": self.metrics.total_followers,
-            "non_reciprocal_count": self.metrics.non_reciprocal,
-            "reciprocal_count": reciprocal_count,
-            "reciprocity_rate": (reciprocal_count / self.metrics.total_following * 100)
-            if self.metrics.total_following > 0
-            else 0,
-            "non_reciprocal_users": non_reciprocal,
-            "follow_ratio": self.metrics.total_followers / self.metrics.total_following
-            if self.metrics.total_following > 0
-            else 0,
-        }
-
-    def export_non_reciprocal_users(self, file_path: str) -> None:
-        """
-        Export non-reciprocal users to a CSV file.
-
-        Args:
-            file_path: Path to output CSV file
-        """
-        import csv
-
-        non_reciprocal = self.find_non_reciprocal_users()
-
-        if not non_reciprocal:
-            logger.info("No non-reciprocal users to export")
-            return
-
-        try:
-            with open(file_path, "w", newline="", encoding="utf-8") as csvfile:
-                fieldnames = ["login", "id", "html_url", "type"]
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-
-                writer.writeheader()
-                for user in non_reciprocal:
-                    writer.writerow(
-                        {
-                            "login": user.get("login", ""),
-                            "id": user.get("id", ""),
-                            "html_url": user.get("html_url", ""),
-                            "type": user.get("type", ""),
-                        }
-                    )
-
-            logger.info(
-                f"💾 Exported {len(non_reciprocal)} non-reciprocal users to {file_path}"
-            )
-
-        except Exception as e:
-            logger.error(f"❌ Failed to export users: {e}")
-
     def apply_filters(self, users: List[Dict]) -> List[Dict]:
         """
         Apply configurable filters to the unfollow list.
@@ -328,6 +267,7 @@ class FollowDiffAnalyzer:
             # Check whitelist (never unfollow whitelisted users)
             if username in follow_config.get("whitelist", []):
                 logger.debug(f"⏭️  Skipping whitelisted user: {username}")
+                self.metrics.skipped_whitelist += 1
                 continue
 
             # Check blacklist (always unfollow blacklisted users)
@@ -338,112 +278,128 @@ class FollowDiffAnalyzer:
             # For other users, apply normal filtering logic
             filtered_users.append(user)
 
-        logger.info(f"🔧 Filters applied: {len(users)} -> {len(filtered_users)} users")
+        skipped = len(users) - len(filtered_users) - self.metrics.skipped_whitelist
+        self.metrics.skipped_filters = skipped
+
+        logger.info(
+            f"🔧 Filters applied: {len(users)} total -> "
+            f"{len(filtered_users)} to unfollow, "
+            f"{self.metrics.skipped_whitelist} whitelisted, "
+            f"{self.metrics.skipped_filters} filtered out"
+        )
         return filtered_users
+
+    def export_report(self, file_path: str) -> None:
+        """
+        Export a detailed report of the operation.
+
+        Args:
+            file_path: Path to output report file
+        """
+        import csv
+        from datetime import datetime
+
+        try:
+            with open(file_path, "w", newline="", encoding="utf-8") as csvfile:
+                fieldnames = [
+                    "timestamp",
+                    "total_following",
+                    "total_followers",
+                    "non_reciprocal",
+                    "unfollowed",
+                    "failed",
+                    "skipped_whitelist",
+                    "skipped_filters",
+                    "duration_seconds",
+                ]
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "timestamp": datetime.now().isoformat(),
+                        "total_following": self.metrics.total_following,
+                        "total_followers": self.metrics.total_followers,
+                        "non_reciprocal": self.metrics.non_reciprocal,
+                        "unfollowed": self.metrics.unfollowed,
+                        "failed": self.metrics.failed_unfollows,
+                        "skipped_whitelist": self.metrics.skipped_whitelist,
+                        "skipped_filters": self.metrics.skipped_filters,
+                        "duration_seconds": round(self.metrics.elapsed_time, 2),
+                    }
+                )
+
+            logger.info(f"💾 Report exported to {file_path}")
+
+        except Exception as e:
+            logger.error(f"❌ Failed to export report: {e}")
 
 
 @time_it
 def main():
     """
-    Main execution function for follow diff analysis.
+    Main execution function for automated follow diff cleanup.
+    Designed to run in CI/CD without user interaction.
     """
-    parser = argparse.ArgumentParser(
-        description="Find and unfollow users who don't follow you back"
-    )
-    parser.add_argument(
-        "--export", type=str, help="Export non-reciprocal users to CSV file"
-    )
-    parser.add_argument(
-        "--unfollow-all", action="store_true", help="Unfollow all non-reciprocal users"
-    )
-    parser.add_argument("--max-workers", type=int, help="Maximum concurrent workers")
-    parser.add_argument(
-        "--interactive",
-        action="store_true",
-        help="Interactive mode for selective unfollowing",
-    )
-    parser.add_argument(
-        "--apply-filters", action="store_true", help="Apply FOLLOW_CONFIG filters"
-    )
-    parser.add_argument(
-        "--config-file", type=str, help="Load configuration from JSON file"
-    )
-
-    args = parser.parse_args()
-
-    # Load config from file if specified
-    if args.config_file:
-        config = Config.from_file(args.config_file)
-    else:
-        config = Config.load(validate_with_github=True)
-
-    dry_run = config.DRY_RUN
+    logger.info("🚀 Starting Automated GitHub Follow Cleanup")
+    logger.info(f"🔧 Mode: {'DRY RUN' if config.DRY_RUN else 'LIVE'}")
 
     activity_service = GitHubActivityService()
     connector_service = GitHubConnectorService()
 
-    logger.info("🚀 Starting GitHub Follow Diff Analysis")
-
     analyzer = FollowDiffAnalyzer(activity_service, connector_service, config)
 
     try:
-        analysis = analyzer.analyze_reciprocity()
+        # Load and analyze follow data
+        analyzer.load_follow_data()
+        non_reciprocal_users = analyzer.find_non_reciprocal_users()
 
+        # Log analysis results
         logger.info("📊 Follow Analysis:")
-        logger.info(f"   Users you follow: {analysis['total_following']}")
-        logger.info(f"   Your followers: {analysis['total_followers']}")
-        logger.info(f"   Reciprocal follows: {analysis['reciprocal_count']}")
-        logger.info(f"   Non-reciprocal follows: {analysis['non_reciprocal_count']}")
-        logger.info(f"   Reciprocity rate: {analysis['reciprocity_rate']:.1f}%")
-        logger.info(f"   Follow ratio: {analysis['follow_ratio']:.2f}")
+        logger.info(f"   Users you follow: {analyzer.metrics.total_following}")
+        logger.info(f"   Your followers: {analyzer.metrics.total_followers}")
+        logger.info(f"   Non-reciprocal: {analyzer.metrics.non_reciprocal}")
 
-        if args.export:
-            analyzer.export_non_reciprocal_users(args.export)
+        if not non_reciprocal_users:
+            logger.info("✅ No non-reciprocal follows found. All good!")
+            return
 
-        users_to_process = analysis["non_reciprocal_users"]
-        if args.apply_filters:
-            users_to_process = analyzer.apply_filters(users_to_process)
-            logger.info(f"🔧 After filtering: {len(users_to_process)} users to process")
+        # Apply filters from config
+        users_to_unfollow = analyzer.apply_filters(non_reciprocal_users)
 
-        if args.unfollow_all:
-            if users_to_process:
-                logger.warning(f"⚠️  About to unfollow {len(users_to_process)} users!")
+        if not users_to_unfollow:
+            logger.info("✅ No users to unfollow after applying filters")
+            return
 
-                if not dry_run:
-                    confirm = input("Type 'YES' to confirm: ")
-                    if confirm != "YES":
-                        logger.info("❌ Unfollow cancelled")
-                        return
+        # Log what we're about to do
+        logger.info(f"🎯 Preparing to unfollow {len(users_to_unfollow)} users")
 
-                analyzer.batch_unfollow(
-                    users_to_process, max_workers=args.max_workers, dry_run=dry_run
-                )
-            else:
-                logger.info("✅ No users to unfollow")
+        if config.DRY_RUN:
+            logger.info("🧪 DRY RUN: Simulating unfollows...")
+        else:
+            logger.warning(
+                f"⚠️  LIVE MODE: Will unfollow {len(users_to_unfollow)} users"
+            )
 
-        elif args.interactive and users_to_process:
-            logger.info("💬 Interactive mode - reviewing non-reciprocal users:")
+        # Execute batch unfollow
+        analyzer.batch_unfollow(users_to_unfollow, dry_run=config.DRY_RUN)
 
-            for i, user in enumerate(users_to_process, 1):
-                print(f"\n[{i}/{len(users_to_process)}] {user['login']}")
-                print(f"   Profile: {user.get('html_url', 'N/A')}")
+        # Export report
+        report_file = config.OUTPUT_FILE.replace(".csv", "_diff_report.csv")
+        analyzer.export_report(report_file)
 
-                action = (
-                    input("   Action: (s)kip, (u)nfollow, (q)uit: ").lower().strip()
-                )
-
-                if action == "q":
-                    logger.info("👋 Exiting interactive mode")
-                    break
-                elif action == "u":
-                    if dry_run:
-                        logger.info(f"🧪 Would unfollow: {user['login']}")
-                    else:
-                        analyzer.unfollow_user(user["login"])
-                else:
-                    logger.info(f"⏭️  Skipped: {user['login']}")
-
+        # Print summary
         logger.info(analyzer.metrics.summary())
+
+        # Exit with appropriate code
+        if analyzer.metrics.failed_unfollows > 0:
+            logger.warning(
+                f"⚠️  Completed with {analyzer.metrics.failed_unfollows} failures"
+            )
+            sys.exit(1)
+        else:
+            logger.info("✅ Cleanup completed successfully!")
+            sys.exit(0)
 
     except Exception as e:
         logger.error(f"❌ Fatal error: {e}", exc_info=True)

@@ -1,9 +1,6 @@
 name: GitHub Follower Sync
 
 on:
-  push:
-    branches: [master]
-
   schedule:
     - cron: "0 8-17 * * 1-5"
 
